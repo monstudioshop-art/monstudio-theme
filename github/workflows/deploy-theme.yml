@@ -72,3 +72,4 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"theme":{"role":"main"}}'
           echo "✅ Theme published successfully."
+          # Trigger redeploy
