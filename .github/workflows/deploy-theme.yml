@@ -1,0 +1,81 @@
+name: Deploy theme with Shopify CLI (Stable v75)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Backup and Deploy Shopify Theme
+    runs-on: ubuntu-latest
+
+    env:
+      SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+      SHOPIFY_ADMIN_API_TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq zip
+
+      - name: Backup current live theme
+        id: backup
+        run: |
+          echo "Fetching current live theme ID..."
+          resp=$(curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes.json" \
+            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+            -H "Content-Type: application/json")
+          theme_id=$(echo "$resp" | jq -r '.themes[] | select(.role=="main") .id')
+          if [ -z "$theme_id" ]; then
+            echo "No live theme found, skipping backup."
+            exit 0
+          fi
+          mkdir -p backup
+          curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/$theme_id/assets.json" \
+            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+            -H "Content-Type: application/json" -o backup/assets_list.json
+          echo "Backup complete for theme $theme_id."
+
+      - name: Create unpublished theme for deployment
+        id: create
+        run: |
+          echo "Creating new unpublished theme..."
+          resp=$(curl -s -X POST "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes.json" \
+            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"theme":{"name":"AutoDeploy-'$(date +%Y%m%d-%H%M%S)'","role":"unpublished"}}')
+          new_id=$(echo "$resp" | jq -r '.theme.id')
+          if [ -z "$new_id" ] || [ "$new_id" = "null" ]; then
+            echo "❌ Failed to create new theme."
+            echo "$resp"
+            exit 1
+          fi
+          echo "theme_id=$new_id" >> $GITHUB_OUTPUT
+          echo "✅ Created theme with ID: $new_id"
+
+      - name: Upload theme files
+        run: |
+          echo "Uploading theme files..."
+          find theme -type f | while read -r f; do
+            key=$(echo "${f#theme/}")
+            b64=$(base64 -w0 "$f")
+            curl -s -X PUT "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/${{ steps.create.outputs.theme_id }}/assets.json" \
+              -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"asset\":{\"key\":\"$key\",\"attachment\":\"$b64\"}}"
+          done
+          echo "✅ Upload complete."
+
+      - name: Publish the theme (optional)
+        if: ${{ github.event.inputs.publish == 'true' }}
+        run: |
+          echo "Publishing theme..."
+          curl -s -X PUT "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/${{ steps.create.outputs.theme_id }}.json" \
+            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"theme":{"role":"main"}}'
+          echo "✅ Theme published."
