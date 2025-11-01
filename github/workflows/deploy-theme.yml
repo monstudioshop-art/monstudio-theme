@@ -74,3 +74,4 @@ jobs:
           echo "✅ Theme published successfully."
           # Trigger redeploy
 # Trigger redeploy
+# manual trigger for redeploy
