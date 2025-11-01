@@ -1,58 +1,125 @@
-name: Deploy theme with Shopify CLI (backup + deploy)
+name: Deploy Shopify Theme (v2 Safe Mode)
 
 on:
   push:
-    branches:
-      - main
-      - dawn-theme-upload
+    branches: [ "main" ]     # main에 커밋 시 자동 배포
+    paths:
+      - "theme/**"           # theme/ 안의 변경이 있을 때만 실행
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish after upload?"
+        required: false
+        default: "false"
 
 env:
-  SHOPIFY_CLI_VERSION: "3.45.0"
+  API_FALLBACKS: "2024-10,2024-07,2024-04"   # 상위 버전부터 시도
 
 jobs:
-  backup:
-    name: Backup current published theme
+  deploy:
     runs-on: ubuntu-latest
-    env:
-      SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
-      SHOPIFY_ADMIN_API_TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Get published theme id
-        id: get_published
+      - name: Preconditions
         run: |
-          resp=$(curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes.json" \
-            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
-            -H "Content-Type: application/json")
-          echo "$resp" > themes.json
-          theme_id=$(echo "$resp" | jq -r '.themes[] | select(.role=="main") .id // ""')
-          echo "theme_id=$theme_id" >> $GITHUB_OUTPUT
+          if [ ! -d "theme" ]; then
+            echo "❌ './theme' 폴더가 없습니다. Dawn 테마 전체를 theme/ 아래에 넣어주세요."
+            exit 1
+          fi
+          echo "✅ theme/ 폴더 확인됨."
 
-      - name: Upload backup artifact
-        if: steps.get_published.outputs.theme_id != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: shopify-theme-backup-${{ steps.get_published.outputs.theme_id }}
-          path: backup/
+      - name: Pick available API version
+        id: apiver
+        env:
+          SHOP: ${{ secrets.SHOPIFY_STORE }}
+          TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+          LIST: ${{ env.API_FALLBACKS }}
+        run: |
+          set -e
+          CHOSEN=""
+          IFS=',' read -ra VERS <<< "$LIST"
+          for V in "${VERS[@]}"; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "X-Shopify-Access-Token: $TOKEN" \
+              "https://$SHOP/admin/api/$V/shop.json" || true)
+            if [ "$code" = "200" ]; then
+              CHOSEN="$V"; break
+            fi
+          done
+          if [ -z "$CHOSEN" ]; then
+            echo "❌ 사용할 수 있는 Admin API 버전을 찾지 못했습니다."
+            exit 1
+          fi
+          echo "version=$CHOSEN" >> "$GITHUB_OUTPUT"
+          echo "✅ 사용할 API 버전: $CHOSEN"
 
-  deploy:
-    name: Deploy with Shopify CLI
-    runs-on: ubuntu-latest
-    needs: backup
-    env:
-      SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
-      SHOPIFY_ADMIN_API_TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Shopify CLI
+      - name: Create new UNPUBLISHED theme
+        id: create
+        env:
+          SHOP: ${{ secrets.SHOPIFY_STORE }}
+          TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+          V: ${{ steps.apiver.outputs.version }}
         run: |
-          npm install -g @shopify/cli @shopify/theme
-      - name: Deploy theme
+          set -e
+          NAME="auto-deploy-$(date +%Y%m%d%H%M%S)"
+          RESP=$(curl -s -X POST "https://$SHOP/admin/api/$V/themes.json" \
+            -H "X-Shopify-Access-Token: $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"theme\":{\"name\":\"$NAME\",\"role\":\"unpublished\"}}")
+          echo "$RESP" > create.json
+          ID=$(jq -r '.theme.id // empty' create.json)
+          if [ -z "$ID" ]; then
+            echo "❌ 테마 생성 실패"; cat create.json; exit 1
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "✅ 새 테마 생성: $NAME (ID: $ID)"
+
+      - name: Upload assets (all files under theme/)
+        env:
+          SHOP: ${{ secrets.SHOPIFY_STORE }}
+          TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+          V: ${{ steps.apiver.outputs.version }}
+          THEME_ID: ${{ steps.create.outputs.id }}
         run: |
-          shopify theme push --path theme --store $SHOPIFY_STORE --token $SHOPIFY_ADMIN_API_TOKEN --allow-live
+          set -e
+          # 모든 파일을 base64로 업로드 (텍스트/바이너리 공통)
+          find theme -type f | while read -r f; do
+            KEY="${f#theme/}"
+            B64=$(base64 -w0 "$f")
+            PAYLOAD="{\"asset\":{\"key\":\"$KEY\",\"attachment\":\"$B64\"}}"
+            CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X PUT "https://$SHOP/admin/api/$V/themes/$THEME_ID/assets.json" \
+              -H "X-Shopify-Access-Token: $TOKEN" \
+              -H "Content-Type: application/json" \
+              -d "$PAYLOAD")
+            if [ "$CODE" != "200" ]; then
+              echo "⚠️ 업로드 실패: $KEY (HTTP $CODE)"; exit 1
+            else
+              echo "✔ 업로드: $KEY"
+            fi
+          done
+          echo "✅ 모든 asset 업로드 완료"
+
+      - name: Optionally publish
+        if: ${{ github.event.inputs.publish == 'true' || env.PUBLISH == 'true' }}
+        env:
+          SHOP: ${{ secrets.SHOPIFY_STORE }}
+          TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+          V: ${{ steps.apiver.outputs.version }}
+          THEME_ID: ${{ steps.create.outputs.id }}
+        run: |
+          set -e
+          RESP=$(curl -s -X PUT "https://$SHOP/admin/api/$V/themes/$THEME_ID.json" \
+            -H "X-Shopify-Access-Token: $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"theme\":{\"id\":$THEME_ID,\"role\":\"main\"}}")
+          CODE=$(echo "$RESP" | jq -r '.theme.role // empty')
+          if [ "$CODE" = "main" ]; then
+            echo "✅ 테마를 라이브로 게시했습니다 (ID: $THEME_ID)."
+          else
+            echo "⚠️ 게시 실패. Shopify 관리자에서 수동 게시하세요."
+            echo "$RESP"
+          fi
