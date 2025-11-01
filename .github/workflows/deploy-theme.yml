@@ -1,4 +1,4 @@
-name: Deploy theme with Shopify CLI (Stable v75)
+name: Deploy and Auto-Publish Shopify Theme (Stable v75)
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
 
 jobs:
   deploy:
-    name: Backup and Deploy Shopify Theme
+    name: Full Auto Deploy & Publish Shopify Theme
     runs-on: ubuntu-latest
 
     env:
@@ -32,15 +32,15 @@ jobs:
           theme_id=$(echo "$resp" | jq -r '.themes[] | select(.role=="main") .id')
           if [ -z "$theme_id" ]; then
             echo "No live theme found, skipping backup."
-            exit 0
+          else
+            mkdir -p backup
+            curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/$theme_id/assets.json" \
+              -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+              -H "Content-Type: application/json" -o backup/assets_list.json
+            echo "✅ Backup complete for theme $theme_id."
           fi
-          mkdir -p backup
-          curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/$theme_id/assets.json" \
-            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
-            -H "Content-Type: application/json" -o backup/assets_list.json
-          echo "✅ Backup complete for theme $theme_id."
 
-      - name: Create unpublished theme for deployment
+      - name: Create unpublished theme
         id: create
         run: |
           echo "Creating new unpublished theme..."
