@@ -73,3 +73,4 @@ jobs:
             -d '{"theme":{"role":"main"}}'
           echo "✅ Theme published successfully."
           # Trigger redeploy
+# Trigger redeploy
