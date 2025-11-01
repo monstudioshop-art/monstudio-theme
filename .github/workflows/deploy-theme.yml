@@ -38,7 +38,7 @@ jobs:
           curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/$theme_id/assets.json" \
             -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
             -H "Content-Type: application/json" -o backup/assets_list.json
-          echo "Backup complete for theme $theme_id."
+          echo "✅ Backup complete for theme $theme_id."
 
       - name: Create unpublished theme for deployment
         id: create
@@ -65,7 +65,7 @@ jobs:
           done
           echo "✅ Upload complete."
 
-      - name: Publish new theme
+      - name: Publish new theme automatically
         run: |
           echo "Publishing new theme as main..."
           curl -s -X PUT "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/${{ steps.create.outputs.theme_id }}.json" \
