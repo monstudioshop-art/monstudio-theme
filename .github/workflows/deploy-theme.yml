@@ -1,0 +1,58 @@
+name: Deploy theme with Shopify CLI (backup + deploy)
+
+on:
+  push:
+    branches:
+      - main
+      - dawn-theme-upload
+  workflow_dispatch:
+
+env:
+  SHOPIFY_CLI_VERSION: "3.45.0"
+
+jobs:
+  backup:
+    name: Backup current published theme
+    runs-on: ubuntu-latest
+    env:
+      SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+      SHOPIFY_ADMIN_API_TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Get published theme id
+        id: get_published
+        run: |
+          resp=$(curl -s -X GET "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes.json" \
+            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+            -H "Content-Type: application/json")
+          echo "$resp" > themes.json
+          theme_id=$(echo "$resp" | jq -r '.themes[] | select(.role=="main") .id // ""')
+          echo "theme_id=$theme_id" >> $GITHUB_OUTPUT
+
+      - name: Upload backup artifact
+        if: steps.get_published.outputs.theme_id != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: shopify-theme-backup-${{ steps.get_published.outputs.theme_id }}
+          path: backup/
+
+  deploy:
+    name: Deploy with Shopify CLI
+    runs-on: ubuntu-latest
+    needs: backup
+    env:
+      SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+      SHOPIFY_ADMIN_API_TOKEN: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Shopify CLI
+        run: |
+          npm install -g @shopify/cli @shopify/theme
+      - name: Deploy theme
+        run: |
+          shopify theme push --path theme --store $SHOPIFY_STORE --token $SHOPIFY_ADMIN_API_TOKEN --allow-live
