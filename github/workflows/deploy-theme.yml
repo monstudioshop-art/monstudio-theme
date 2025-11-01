@@ -64,3 +64,11 @@ jobs:
               -d "{\"asset\":{\"key\":\"$key\",\"attachment\":\"$b64\"}}"
           done
           echo "✅ Upload complete."
+ - name: Publish new theme
+        run: |
+          echo "Publishing new theme as main..."
+          curl -s -X PUT "https://${{ secrets.SHOPIFY_STORE }}/admin/api/2024-10/themes/${{ steps.create.outputs.theme_id }}.json" \
+            -H "X-Shopify-Access-Token: ${{ secrets.SHOPIFY_ADMIN_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"theme":{"role":"main"}}'
+          echo "✅ Theme published successfully."
