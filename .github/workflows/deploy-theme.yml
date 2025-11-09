@@ -63,7 +63,7 @@ jobs:
               -H "Content-Type: application/json" \
               -d "{\"asset\":{\"key\":\"$key\",\"attachment\":\"$b64\"}}"
           done
-          echo "✅ Upload complete."
+          echo "  Upload complete."
  - name: Publish new theme
         run: |
           echo "Publishing new theme as main..."
